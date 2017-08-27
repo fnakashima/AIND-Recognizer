@@ -67,6 +67,21 @@ class SelectorBIC(ModelSelector):
     http://www2.imm.dtu.dk/courses/02433/doc/ch6_slides.pdf
     Bayesian information criteria: BIC = -2 * logL + p * logN
     """
+    def get_BIC_score(self, num_states):
+        model = GaussianHMM(n_components=num_states, covariance_type="diag", n_iter=1000,
+                            random_state=self.random_state, verbose=False).fit(self.X, self.lengths)
+            
+        logL = model.score(self.X, self.lengths)
+        # https://discussions.udacity.com/t/number-of-parameters-bic-calculation/233235/6
+        # https://discussions.udacity.com/t/verifing-bic-calculation/246165/4
+        # where d is the number of features and n the number of components.
+        n = num_states
+        d = len(self.X[0])
+        n_parameters = n * n + 2 * n * d - 1
+
+        # https://discussions.udacity.com/t/number-of-data-points-bic-calculation/235294
+        n_dataPoints = len(self.X)
+        return -2 * np.log(logL) + n_parameters * np.log(n_dataPoints)
 
     def select(self):
         """ select the best model for self.this_word based on
@@ -77,8 +92,24 @@ class SelectorBIC(ModelSelector):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
         # TODO implement model selection based on BIC scores
-        raise NotImplementedError
+        best_num_components = self.min_n_components
+        best_score = float('inf')
+        num_states = self.min_n_components
+        while num_states <= self.max_n_components:
+            try:
+                BIC_score = self.get_BIC_score(num_states)
+            except ValueError:
+                num_states += 1
+                continue
 
+            # Model selection: The lower the BIC value the better the model
+            if best_score > BIC_score:
+                best_score = BIC_score
+                best_num_components = num_states
+            
+            num_states += 1
+
+        return self.base_model(best_num_components)
 
 class SelectorDIC(ModelSelector):
     ''' select best model based on Discriminative Information Criterion
@@ -89,11 +120,49 @@ class SelectorDIC(ModelSelector):
     DIC = log(P(X(i)) - 1/(M-1)SUM(log(P(X(all but i))
     '''
 
+    def get_DIC_score(self, num_states):
+        model = GaussianHMM(n_components=num_states, covariance_type="diag", n_iter=1000,
+                            random_state=self.random_state, verbose=False).fit(self.X, self.lengths)
+        
+        # A difference between the likelihood of the data, log(P(X(i)), 
+        #  and the average of anti-likelihood terms, log(P(X(all but i),
+        #  where the anti-likelihood of the data Xj against model M is a likelihood-like quantity
+        #  in which the data and the model belong to competing categories.
+        # DIC = log(P(X(i)) - 1/(M-1)SUM(log(P(X(all but i))
+
+        # https://discussions.udacity.com/t/dic-score-calculation/238907
+        # log(P(X(i)) is simply the log likelyhood (score) that is returned from the model by calling model.score.
+        logL = model.score(self.X, self.lengths)
+
+        # The log(P(X(j)); where j != i is just the model score
+        #  when evaluating the model on all words other than the word for which we are training this particular model.
+        logLs_anti = [model.score(X, lengths) for (X, lengths) in self.hwords if X != self.this_word]
+        average_logL_anti = sum(logLs_anti) / (len(self.hwords)-1)
+
+        return logL - average_logL_anti
+
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
-
+        
         # TODO implement model selection based on DIC scores
-        raise NotImplementedError
+        best_num_components = self.min_n_components
+        best_score = float('-inf')
+        num_states = self.min_n_components
+        while num_states <= self.max_n_components:
+            try:
+                DIC_score = self.get_DIC_score(num_states)
+            except ValueError:
+                num_states += 1
+                continue
+
+            # select the configuration that yields the highest value of the model selection criterion.
+            if best_score < DIC_score:
+                best_score = DIC_score
+                best_num_components = num_states
+            
+            num_states += 1
+
+        return self.base_model(best_num_components)
 
 
 class SelectorCV(ModelSelector):
@@ -101,8 +170,56 @@ class SelectorCV(ModelSelector):
 
     '''
 
+    def get_LogL_with_CV(self, split_method, num_states):
+        split_logLs = []
+        for cv_train_idx, cv_test_idx in split_method.split(self.sequences):
+            # train a model with train fold
+            train_X, train_lengths = combine_sequences(cv_train_idx, self.sequences)
+            model = GaussianHMM(n_components=num_states, covariance_type="diag", n_iter=1000,
+                                random_state=self.random_state, verbose=False).fit(train_X, train_lengths)
+            # Cross-validation with test fold
+            test_X, test_lengths = combine_sequences(cv_test_idx, self.sequences)
+            split_logLs.append(model.score(test_X, test_lengths))
+            
+        # return the average of all the splits
+        return np.mean(split_logLs)
+
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
         # TODO implement model selection using CV
-        raise NotImplementedError
+
+        # https://discussions.udacity.com/t/cannot-have-number-of-splits-n-splits-3-greater-than-the-number-of-samples-2/248850/5
+        # https://discussions.udacity.com/t/fish-word-with-selectorcv-problem/233475
+        # Take min value between length of sequences and 3 to set n_splits for KFold
+        # Otherwise, get the following error
+        # ValueError: Cannot have number of splits n_splits=3 greater than the number of samples: 2.
+        n_splits = min(len(self.sequences), 3)
+
+        # If n_splits is 1, just returns model with n_constant
+        # Otherwise, get the following error when splitting by KFold
+        # "ValueError: k-fold cross-validation requires at least one train/test split by setting n_splits=2 or more, got n_splits=1."
+        # https://discussions.udacity.com/t/problems-in-part-3-executing-selectorcv-valueerror/302848/2
+        if n_splits < 2:
+            return self.base_model(self.n_constant)
+
+        split_method = KFold(n_splits=n_splits)
+
+        best_num_components = self.min_n_components
+        best_score = float('-inf')
+        num_states = self.min_n_components
+        while num_states <= self.max_n_components:
+            try:
+                logL_with_CV = self.get_LogL_with_CV(split_method, num_states)
+            except ValueError:
+                num_states += 1
+                continue
+
+            # Compare the result with the best score so far
+            if best_score < logL_with_CV:
+                best_score = logL_with_CV
+                best_num_components = num_states
+            
+            num_states += 1
+
+        return self.base_model(best_num_components)
