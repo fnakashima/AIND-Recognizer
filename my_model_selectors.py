@@ -81,7 +81,7 @@ class SelectorBIC(ModelSelector):
 
         # https://discussions.udacity.com/t/number-of-data-points-bic-calculation/235294
         n_dataPoints = len(self.X)
-        return -2 * np.log(logL) + n_parameters * np.log(n_dataPoints)
+        return -2 * logL + n_parameters * np.log(n_dataPoints)
 
     def select(self):
         """ select the best model for self.this_word based on
@@ -136,8 +136,16 @@ class SelectorDIC(ModelSelector):
 
         # The log(P(X(j)); where j != i is just the model score
         #  when evaluating the model on all words other than the word for which we are training this particular model.
-        logLs_anti = [model.score(X, lengths) for (X, lengths) in self.hwords if X != self.this_word]
-        average_logL_anti = sum(logLs_anti) / (len(self.hwords)-1)
+        logLs_anti = []
+        for antiX, antiLength in self.hwords.items():
+            if antiX == self.this_word: continue
+            try:
+                logLs_anti.append(model.score(antiX, antiLength))
+            except:
+                pass
+
+        #average_logL_anti = sum(logLs_anti) / (len(self.hwords)-1)
+        average_logL_anti = np.mean(sum(logLs_anti))
 
         return logL - average_logL_anti
 
