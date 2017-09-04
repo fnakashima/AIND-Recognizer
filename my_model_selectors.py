@@ -1,6 +1,7 @@
 import math
 import statistics
 import warnings
+import random
 
 import numpy as np
 from hmmlearn.hmm import GaussianHMM
@@ -67,7 +68,7 @@ class SelectorBIC(ModelSelector):
     http://www2.imm.dtu.dk/courses/02433/doc/ch6_slides.pdf
     Bayesian information criteria: BIC = -2 * logL + p * logN
     """
-    def get_BIC_score(self, num_states):
+    def get_BIC_score(self, num_states, aplpha):
         model = GaussianHMM(n_components=num_states, covariance_type="diag", n_iter=1000,
                             random_state=self.random_state, verbose=False).fit(self.X, self.lengths)
             
@@ -75,13 +76,30 @@ class SelectorBIC(ModelSelector):
         # https://discussions.udacity.com/t/number-of-parameters-bic-calculation/233235/6
         # https://discussions.udacity.com/t/verifing-bic-calculation/246165/4
         # where d is the number of features and n the number of components.
-        n = num_states
-        d = len(self.X[0])
-        n_parameters = n * n + 2 * n * d - 1
+        # n = num_states
+        # d = len(self.X[0])
+        # n_parameters = n * n + 2 * n * d - 1
+
+        # From the reviewer's suggestion:
+        # An alternative way to calculate p directly from the HMM model
+        # p (n_parameters) is the sum of four terms:
+        # - The free transition probability parameters, which is the size of the transmat matrix
+        # - The free starting probabilities
+        # - Number of means
+        # - Number of covariances which is the size of the covars matrix
+        #
+        # These can all be calculated directly from the hmmlearn model as follows:
+        # p = (model.startprob_.size - 1) + (model.transmat_.size - 1) + model.means_.size + model.covars_.diagonal().size
+        # http://hmmlearn.readthedocs.io/en/latest/api.html#gaussianhmm
+        # https://github.com/hmmlearn/hmmlearn/blob/master/hmmlearn/hmm.py#L106
+        n_parameters = (model.transmat_.size - 1) \
+                     + (model.startprob_.size - 1) \
+                     + model.means_.size \
+                     + model.covars_.diagonal().size
 
         # https://discussions.udacity.com/t/number-of-data-points-bic-calculation/235294
         n_dataPoints = len(self.X)
-        return -2 * logL + n_parameters * np.log(n_dataPoints)
+        return -2 * logL + n_parameters * np.log(n_dataPoints) * aplpha
 
     def select(self):
         """ select the best model for self.this_word based on
@@ -91,13 +109,18 @@ class SelectorBIC(ModelSelector):
         """
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection based on BIC scores
+        # implement model selection based on BIC scores
         best_num_components = self.min_n_components
         best_score = float('inf')
         num_states = self.min_n_components
+
+        # From the reviewer's suggestion:
+        # You can add a parameter alpha to the free parameters to provide a weight to the free parameters, so the penalty term will become alpha * p * logN.
+        # This regularization parameter can then be varied to further improve the result 👍🏽. Good values can be anywhere between 0 and 1, or even greater than 1 (but maybe less than 2 :) )
+        alpha = random.uniform(0,1)
         while num_states <= self.max_n_components:
             try:
-                BIC_score = self.get_BIC_score(num_states)
+                BIC_score = self.get_BIC_score(num_states, alpha)
             except ValueError:
                 num_states += 1
                 continue
@@ -147,12 +170,18 @@ class SelectorDIC(ModelSelector):
         #average_logL_anti = sum(logLs_anti) / (len(self.hwords)-1)
         average_logL_anti = np.mean(sum(logLs_anti))
 
+        # From the reviewer's suggestion
+        # The calculation of the DIC penalty term can be done in one line only as follows:
+        # average_logL_anti = np.mean([model.score(self.hwords[word]) for word in self.words if word != self.this_word])
+        # However, all the result states were 2 with this one line formula.
+        # Probably, try/except could be necessary here to catch an error caused by any words which cannot be calculated a score as above.
+
         return logL - average_logL_anti
 
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
         
-        # TODO implement model selection based on DIC scores
+        # implement model selection based on DIC scores
         best_num_components = self.min_n_components
         best_score = float('-inf')
         num_states = self.min_n_components
@@ -195,7 +224,7 @@ class SelectorCV(ModelSelector):
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection using CV
+        # implement model selection using CV
 
         # https://discussions.udacity.com/t/cannot-have-number-of-splits-n-splits-3-greater-than-the-number-of-samples-2/248850/5
         # https://discussions.udacity.com/t/fish-word-with-selectorcv-problem/233475
